@@ -32,6 +32,8 @@ parser.add_argument("--multi", type=int, default=2, help="output frames per inpu
 parser.add_argument("--port", type=int, default=8090)
 parser.add_argument("--scale", type=float, default=1.0, help="RIFE scale; 0.5 is faster on big frames")
 parser.add_argument("--no-label", action="store_true", help="don't draw the small corner label")
+parser.add_argument("--host", default="127.0.0.1", help="127.0.0.1 for rc-tunnel; 0.0.0.0 to listen everywhere")
+parser.add_argument("--key", default="", help="secret required on every request (the rc-tunnel URL is public)")
 args = parser.parse_args()
 
 
@@ -132,13 +134,33 @@ threading.Thread(target=worker, daemon=True).start()
 
 # ---------------------------------------------------------------- HTTP
 PAGE = b"""<html><body style='margin:0;background:#000;color:#ddd;font-family:sans-serif'>
-<img src='/stream' style='width:100%'><pre id='s' style='margin:8px'></pre>
-<script>setInterval(async()=>{const r=await fetch('/stats');document.getElementById('s').textContent=
+<img id='v' style='width:100%'><pre id='s' style='margin:8px'></pre>
+<script>const q=location.search;document.getElementById('v').src='stream'+q;
+setInterval(async()=>{const r=await fetch('stats'+q);document.getElementById('s').textContent=
 JSON.stringify(await r.json(),null,1)},1000)</script></body></html>"""
 
 
+def authorized(handler):
+    """With --key: accept 'Authorization: token <key>', 'X-Key: <key>', or ?key= / ?token= in the URL."""
+    if not args.key:
+        return True
+    from urllib.parse import parse_qs, urlparse
+    q = parse_qs(urlparse(handler.path).query)
+    return (handler.headers.get("Authorization", "") == f"token {args.key}"
+            or handler.headers.get("X-Key", "") == args.key
+            or q.get("key", [""])[0] == args.key or q.get("token", [""])[0] == args.key)
+
+
 class Handler(BaseHTTPRequestHandler):
+    def deny(self):
+        self.send_response(401)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"unauthorized: add ?key=<your key>")
+
     def do_POST(self):
+        if not authorized(self):
+            return self.deny()
         if not self.path.startswith("/frame"):
             self.send_response(404)
             self.end_headers()
@@ -161,6 +183,8 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        if not authorized(self):
+            return self.deny()
         if self.path.startswith("/stats"):
             body = json.dumps({
                 "model": engine.name, "device": engine.device, "backend": engine.backend, "multi": args.multi,
@@ -207,5 +231,6 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
-print(f"Listening on port {args.port}: POST /frame, GET /stream, /stats, /")
-ThreadingHTTPServer(("0.0.0.0", args.port), Handler).serve_forever()
+print(f"Listening on {args.host}:{args.port}: POST /frame, GET /stream, /stats, /"
+      + ("  (key required)" if args.key else "  (NO key: anyone with the URL can use it)"))
+ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
