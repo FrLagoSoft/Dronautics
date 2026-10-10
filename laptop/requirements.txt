@@ -1,0 +1,7 @@
+ultralytics
+opencv-python
+pyserial
+djitellopy
+lap
+websockets
+numpy
