@@ -2,7 +2,7 @@
 Values here are starting points; calibration keys (a, k, c) adjust some of them live."""
 
 # ---------- run ----------
-DRY_RUN = False           # True = webcam stands in for the drone, nothing flies
+DRY_RUN = True           # True = webcam stands in for the drone, nothing flies
 LOOP_HZ = 20              # control loop rate (commands per second)
 
 # ---------- base station link ----------
@@ -30,7 +30,10 @@ LOCK_MATCH = 0.55         # score needed to re-adopt the locked person (color + 
 
 # ---------- leash geometry ----------
 LEASH_ANGLE = 0.0         # 0 = in front of you, 180 = behind you
-R_INDOOR_MAX = 2.5        # caps the brace radius indoors (m)
+RADIUS_START = 2.5        # leash radius at startup (m), same as the old fixed value. The laptop owns it:
+RADIUS_STEP = 0.4         #   each brace press or app IN/OUT changes it by this much,
+RADIUS_MIN = 1.3          #   and it always stays inside these limits.
+RADIUS_MAX = 4.0
 D_MIN = 1.0               # never closer than this (m)
 USE_BRACE_HEADING = True  # False = just keep distance in front of you
 
@@ -69,3 +72,7 @@ TILT_GAIN = 1.5           # speed per degree beyond the deadband
 TILT_MAX = 40
 GLOVE_PITCH_SIGN = 1      # flip to -1 if tilting forward flies backward
 GLOVE_ROLL_SIGN = 1       # flip to -1 if tilting right slides left
+
+# ---------- AMD display smoothing (amd/interp_server.py on the AMD GPU) ----------
+INTERP_URL = ""           # e.g. "http://<amd-machine-ip>:8090"; empty = off
+INTERP_FPS = 15           # frames per second sent for smoothing

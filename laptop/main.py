@@ -22,6 +22,8 @@ import hud
 import leash as L
 from brace_link import BraceLink
 from drone import make_drone
+from hub import Hub
+from interp_uplink import InterpUplink
 from vision import Vision
 
 
@@ -29,6 +31,8 @@ def main():
     link = BraceLink()
     vision = Vision()
     drone = make_drone()
+    hub = Hub()              # phone app link (WebSocket 8765) and raw video (HTTP 8766)
+    uplink = InterpUplink()  # AMD smoothing service, if config.INTERP_URL is set
     print(f"YOLO on: {'GPU (CUDA)' if vision.on_gpu else 'CPU'}   |   {'DRY RUN (webcam)' if drone.is_dry_run else 'TELLO'}")
 
     # calibration (changes live with keys a, k, c)
@@ -45,6 +49,8 @@ def main():
     yaw_hist = collections.deque(maxlen=60)
     lr_prev = fb_prev = 0
     yaw_test_until = last_print = last_battery = 0.0
+    radius_m, last_brace_radius = C.RADIUS_START, None
+    last_publish, last_lock, battery_pct = 0.0, None, None
 
     while True:
         loop_start = time.time()
@@ -58,9 +64,17 @@ def main():
         brace, brace_ok = link.get("P")
         glove, glove_ok = link.get("G")
         psi_p = C.BRACE_SIGN * brace["heading"] if brace else None
-        r = L.clamp(brace["radius"] if brace else 3, C.D_MIN + 0.3, C.R_INDOOR_MAX)
+        # The laptop owns the radius. A brace press only says which way to step it.
+        if brace and last_brace_radius is not None and brace["radius"] != last_brace_radius:
+            step = C.RADIUS_STEP if brace["radius"] > last_brace_radius else -C.RADIUS_STEP
+            radius_m = L.clamp(radius_m + step, C.RADIUS_MIN, C.RADIUS_MAX)
+            hub.event(f"Radius {radius_m:.1f} m ({'Farther' if step > 0 else 'Closer'} on the brace)")
+        if brace:
+            last_brace_radius = brace["radius"]
+        r = radius_m
 
         # ---------- 1. camera: where are you? ----------
+        uplink.send(frame)  # clean frame to the AMD smoothing service (display only, never used for control)
         det = vision.find(frame)
         now = time.time()
         if det:
@@ -87,7 +101,7 @@ def main():
                 if len(cal_est) >= C.CAL_SAMPLES:
                     cal_est.sort()
                     hfov, cal_active = cal_est[len(cal_est) // 2], False
-                    print(f"Camera angle calibrated: HFOV = {hfov:.1f} deg")
+                    hub.event(f"Camera angle calibrated: HFOV = {hfov:.1f} deg")
                     if cal_bad > len(cal_est) // 2:
                         print("WARNING: picture moved the same way the drone turned: DRONE_YAW_SIGN is probably flipped")
         age = now - last_seen
@@ -149,8 +163,9 @@ def main():
 
         if flying and not drone.is_dry_run and now - last_battery > 5:
             last_battery = now
-            if drone.battery() < C.LOW_BATTERY:
-                print("Battery low: landing")
+            battery_pct = drone.battery()
+            if battery_pct < C.LOW_BATTERY:
+                hub.event("Battery low: landing")
                 drone.land()
                 flying = following = orbiting = False
 
@@ -171,18 +186,68 @@ def main():
         ])
         hud.draw_map(frame, d_s, b_s, r, tx, ty)
         cv2.imshow("Dronautics", frame)
+        hub.push_frame(frame)
+        if vision.target_id != last_lock:
+            last_lock = vision.target_id
+            hub.event(f"Lock: #{last_lock}" if last_lock is not None else "Lock: none")
+        if now - last_publish > 0.1:
+            last_publish = now
+            hub.publish({
+                "mode": "FOLLOW" if following else "HOVER", "state": state,
+                "flying": flying, "following": following, "orbiting": orbiting, "orbit_dir": orbit_dir,
+                "watch": watch, "gentle": gentle, "manual": manual, "dry_run": drone.is_dry_run,
+                "radius": round(radius_m, 2), "d": None if d_s is None else round(d_s, 2),
+                "bearing": None if b_s is None else round(b_s, 1),
+                "heading": None if psi_p is None else round(psi_p, 1),
+                "target": None if tx is None else {"x": round(tx, 2), "y": round(ty, 2)},
+                "cmd": {"lr": lr, "fb": fb, "ud": ud, "yaw": yaw},
+                "battery": 100 if drone.is_dry_run else battery_pct,
+                "brace": {"ok": brace_ok, "acc": brace["acc"] if brace else None},
+                "glove": {"ok": glove_ok, "clutch": glove["clutch"] if glove else 0},
+                "gps": ({"fix": brace["fix"], "sats": brace["sats"], "lat": brace["lat"], "lon": brace["lon"],
+                         "hacc": brace["hacc_m"]} if brace and "fix" in brace else None),
+                "lock": vision.target_id, "people": len(vision.everyone),
+                "calib": {"hfov": round(hfov, 1), "k_set": k_set, "c_set": c_align is not None},
+                "interp": uplink.status(),
+                "clients": hub.client_count,
+            })
         if now - last_print > 1.0:
             last_print = now
             print(f"{state:30s} follow={following} flying={flying} brace={brace_ok} "
                   f"bearing={b_raw_last:+.1f} -> lr {lr:+d} fb {fb:+d} ud {ud:+d} yaw {yaw:+d}")
 
-        # ---------- 5. keys ----------
+        # ---------- 5. keys and app commands ----------
         key = cv2.waitKey(1) & 0xFF
+        for cmd in hub.poll_commands():
+            action, value = cmd.get("action"), cmd.get("value", cmd.get("on"))
+            if action == "radius" and value is not None:
+                radius_m = L.clamp(float(value), C.RADIUS_MIN, C.RADIUS_MAX)
+                hub.event(f"Radius {radius_m:.1f} m (app)")
+            elif action == "radius_step" and value is not None:
+                radius_m = L.clamp(radius_m + float(value), C.RADIUS_MIN, C.RADIUS_MAX)
+                hub.event(f"Radius {radius_m:.1f} m (app)")
+            elif action == "follow":
+                following = bool(value)
+            elif action == "orbit":
+                orbiting = bool(value)
+            elif action == "orbit_dir" and value is not None:
+                orbit_dir = 1 if float(value) >= 0 else -1
+            elif action == "watch":
+                watch = bool(value)
+            elif action == "gentle":
+                gentle = bool(value)
+            elif action in ("takeoff", "land", "emergency", "relock", "yawtest", "cal_angle", "cal_dist", "cal_align"):
+                key = {"takeoff": ord("t"), "land": ord("l"), "emergency": ord("e"), "relock": ord(" "),
+                       "yawtest": ord("y"), "cal_angle": ord("a"), "cal_dist": ord("k"), "cal_align": ord("c")}[action]
+            if action in ("follow", "orbit", "orbit_dir", "watch", "gentle"):
+                hub.event(f"{action} = {value} (app)")
         if key == ord("t") and not flying:
             flying = drone.takeoff()
+            hub.event("Take off" if flying else "Take off FAILED")
         elif key == ord("l") and flying:
             drone.land()
             flying = following = orbiting = False
+            hub.event("Land")
         elif key == ord("f"):
             following = not following
         elif key == ord("o"):
@@ -208,18 +273,19 @@ def main():
         elif key == ord("k"):
             if last_det and age < C.FRESH_S:
                 k_h, k_w, k_set, d_s = C.CAL_DIST_M * last_det.size_h, C.CAL_DIST_M * last_det.size_w, True, None
-                print(f"Distance constants: K {k_h:.3f}  Kw {k_w:.3f}")
+                hub.event(f"Distance constants: K {k_h:.3f}  Kw {k_w:.3f}")
             else:
                 print("Can't set K: stand 2 m away, whole body in view")
         elif key == ord("c"):
             if d_s is not None and age < C.FRESH_S and psi_p is not None:
                 c_align = L.alignment_constant(psi_d, b_s, psi_p)
-                print(f"Headings aligned: C = {c_align:.1f}")
+                hub.event(f"Headings aligned: C = {c_align:.1f}")
             else:
                 print("Can't align: need you in view and brace data")
         elif key == ord("e"):
             drone.emergency()
             flying = following = orbiting = False
+            hub.event("EMERGENCY STOP")
         elif key == ord("q"):
             break
         if key != 255 and key != ord("q"):
