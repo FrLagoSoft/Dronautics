@@ -5,6 +5,7 @@ The base station prints one JSON line per packet:
   {"src":"G", ...}  glove: roll, pitch, clutch, pads
 A background thread reads them so the main loop never waits on the serial port.
 If the USB cable is unplugged, it keeps retrying until the base station is back.
+The other way: buzz(effect) asks the base station to make the brace buzz.
 """
 import csv
 import json
@@ -24,6 +25,9 @@ class BraceLink:
         self.last_time = {}   # when each source last spoke
         self.lock = threading.Lock()
         self.connected = False
+        self.ser = None                    # the open port, for buzz(); None while unplugged
+        self.write_lock = threading.Lock()
+        self.last_buzz = 0.0
 
         new_file = not os.path.exists(log_path)
         self.log_file = open(log_path, "a", newline="")
@@ -37,14 +41,28 @@ class BraceLink:
         while True:
             try:
                 with serial.Serial(self.port, self.baud, timeout=1) as ser:
-                    self.connected = True
+                    self.connected, self.ser = True, ser
                     while True:
                         line = ser.readline().decode(errors="ignore").strip()
                         if line.startswith("{"):
                             self._handle(line)
             except (serial.SerialException, OSError):
-                self.connected = False
+                self.connected, self.ser = False, None
                 time.sleep(1.0)  # base station unplugged or port busy: try again
+
+    def buzz(self, effect):
+        """Make the brace buzz (a DRV2605 effect number). Quietly does nothing if the base station is
+        unplugged; at most one buzz every 0.3 s so they stay distinguishable."""
+        now = time.time()
+        if self.ser is None or now - self.last_buzz < 0.3:
+            return False
+        try:
+            with self.write_lock:
+                self.ser.write(f"BUZZ {int(effect)}\n".encode())
+            self.last_buzz = now
+            return True
+        except (serial.SerialException, OSError):
+            return False
 
     def _handle(self, line):
         try:

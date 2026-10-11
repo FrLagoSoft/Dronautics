@@ -39,6 +39,9 @@ class DryRunDrone:
     def battery(self):
         return 100
 
+    def height(self):
+        return None  # a webcam has no altitude
+
     def close(self):
         self.cam.release()
 
@@ -88,6 +91,13 @@ class TelloDrone:
 
     def battery(self):
         return self.tello.get_battery()
+
+    def height(self):
+        """Height above the takeoff spot in cm, from the state packets (no command sent). None if unknown."""
+        try:
+            return int(self.tello.get_height())
+        except Exception:
+            return None
 
     def close(self):
         self.tello.streamoff()

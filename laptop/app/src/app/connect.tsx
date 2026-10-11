@@ -40,7 +40,7 @@ function Ring({ delay }: { delay: number }) {
 export default function ConnectScreen() {
   const router = useRouter();
   const { settings } = useSettings();
-  const { live, connected, state, error } = useHub();
+  const { live, connected, state, error, searching } = useHub();
   const found = live && state !== null;
 
   // the "plop": a quick swell and settle the moment the drone appears
@@ -51,7 +51,8 @@ export default function ConnectScreen() {
   const plopStyle = useAnimatedStyle(() => ({ transform: [{ scale: plop.value }] }));
 
   let caption: string;
-  if (!settings.host) caption = 'Set the laptop address in Settings';
+  if (searching && !connected) caption = 'searching for the laptop on the USB hotspot…';
+  else if (!settings.host) caption = 'Plug the iPhone into the laptop with Personal Hotspot on';
   else if (found) caption = state.dry_run ? 'laptop in DRY RUN (webcam)' : 'Tello linked through the laptop';
   else if (connected) caption = 'laptop linked, waiting for the drone';
   else caption = error ?? `looking for ${settings.host}`;
@@ -93,6 +94,7 @@ export default function ConnectScreen() {
       </View>
 
       <View style={styles.bottom}>
+        <Pill label="Simulator  ·  no drone needed" tone="ghost" onPress={() => router.push('/sim')} />
         <Pill label="Settings" onPress={() => router.push('/settings')} />
       </View>
     </SafeAreaView>
@@ -127,5 +129,5 @@ const styles = StyleSheet.create({
   circleText: { fontSize: 20, fontWeight: '400', letterSpacing: 0.5 },
   circleHint: { fontSize: 11, color: Palette.inkSoft, letterSpacing: 1 },
   caption: { color: Palette.cream, fontSize: 13, opacity: 0.85, paddingHorizontal: 32, textAlign: 'center' },
-  bottom: { alignSelf: 'stretch', paddingHorizontal: 32, paddingBottom: 24 },
+  bottom: { alignSelf: 'stretch', paddingHorizontal: 32, paddingBottom: 24, gap: 10 },
 });

@@ -19,6 +19,33 @@ import cv2
 
 WS_PORT = 8765
 VIDEO_PORT = 8766
+HOTSPOT_PREFIX = "172.20.10."  # iPhone Personal Hotspot always uses 172.20.10.0/28
+
+
+def local_addresses():
+    """This laptop's IPv4 addresses, without loopback and dead 169.254 ones."""
+    import socket
+    try:
+        addrs = socket.gethostbyname_ex(socket.gethostname())[2]
+    except OSError:
+        addrs = []
+    return [a for a in addrs if not a.startswith(("127.", "169.254."))]
+
+
+def print_phone_addresses():
+    addrs = local_addresses()
+    hotspot = [a for a in addrs if a.startswith(HOTSPOT_PREFIX)]
+    print("-" * 60)
+    if hotspot:
+        print(f"PHONE LINK: iPhone hotspot up. In the app use {hotspot[0]}")
+        print(f"            Safari test: http://{hotspot[0]}:{VIDEO_PORT}/")
+    else:
+        print("PHONE LINK: no iPhone hotspot address (172.20.10.x) on this laptop.")
+        print("            Plug the iPhone in by USB with Personal Hotspot ON, then restart.")
+    others = [a for a in addrs if not a.startswith(HOTSPOT_PREFIX)]
+    if others:
+        print(f"            other addresses: {', '.join(others)}")
+    print("-" * 60)
 
 
 class Hub:
@@ -32,6 +59,7 @@ class Hub:
         self.client_count = 0
         threading.Thread(target=self._ws_thread, daemon=True).start()
         threading.Thread(target=self._video_thread, daemon=True).start()
+        print_phone_addresses()
 
     # ---------- WebSocket ----------
     def _ws_thread(self):

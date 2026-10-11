@@ -12,6 +12,23 @@ import { useHub } from '@/lib/hub';
 import { useSettings, videoBase } from '@/lib/settings';
 
 const RADIUS_STEP = 0.4; // same as RADIUS_STEP in laptop/config.py
+const HEIGHT_STEP = 10; // cm, same as HEIGHT_STEP_CM in laptop/config.py
+
+/** The drone's current command in words: what it's doing right now. */
+function describeMovement(cmd: { lr: number; fb: number; ud: number; yaw: number } | undefined) {
+  if (!cmd) return null;
+  const parts: string[] = [];
+  const min = 3;
+  if (cmd.fb >= min) parts.push('↑ moving closer');
+  else if (cmd.fb <= -min) parts.push('↓ backing away');
+  if (cmd.lr >= min) parts.push('→ sliding right');
+  else if (cmd.lr <= -min) parts.push('← sliding left');
+  if (cmd.yaw >= min) parts.push('↻ turning right');
+  else if (cmd.yaw <= -min) parts.push('↺ turning left');
+  if (cmd.ud >= min) parts.push('▲ climbing');
+  else if (cmd.ud <= -min) parts.push('▼ descending');
+  return parts.length ? parts.join('   ') : '● holding still';
+}
 
 function Legend({ color, label, ring }: { color: string; label: string; ring?: boolean }) {
   return (
@@ -19,6 +36,38 @@ function Legend({ color, label, ring }: { color: string; label: string; ring?: b
       <View style={[styles.legendDot, ring ? { borderColor: color, borderWidth: 1.5 } : { backgroundColor: color }]} />
       <Text style={styles.legendText}>{label}</Text>
     </View>
+  );
+}
+
+/** One calibration step: the laptop key letter, what it sets, and whether it's done. */
+function CalTile({
+  letter,
+  label,
+  status,
+  done,
+  onPress,
+  disabled,
+}: {
+  letter: string;
+  label: string;
+  status: string;
+  done: boolean | null;
+  onPress: () => void;
+  disabled: boolean;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      style={({ pressed }) => [
+        styles.calTile,
+        done ? styles.calTileDone : null,
+        { opacity: disabled ? 0.4 : pressed ? 0.7 : 1 },
+      ]}>
+      <Text style={[styles.calLetter, done ? styles.calInkText : null]}>{letter}</Text>
+      <Text style={[styles.calLabel, done ? styles.calInkText : null]}>{label}</Text>
+      <Text style={[styles.calStatus, done ? styles.calInkSoft : null]}>{status}</Text>
+    </Pressable>
   );
 }
 
@@ -39,6 +88,9 @@ export default function ControlScreen() {
   const { state, live, events, send } = useHub();
   const [smoothed, setSmoothed] = useState(false);
   const [mapOpen, setMapOpen] = useState(false);
+
+  // the newest calibration message from the laptop (success or what to fix), shown under the buttons
+  const calNote = events.find((e) => /calibrat|Distance constants|Headings aligned|Can't|DRONE_YAW_SIGN/i.test(e.text))?.text;
 
   const base = videoBase(settings);
   const amd = state?.interp && state.interp.ok ? state.interp : null;
@@ -75,9 +127,14 @@ export default function ControlScreen() {
           </Text>
           <Text style={styles.stateSub}>
             {live && s
-              ? `${s.mode}${s.gentle ? ' · gentle' : ' · full'}${s.manual ? ' · GLOVE' : ''}${s.dry_run ? ' · DRY RUN' : ''}`
+              ? `${s.mode}${s.gentle ? ' · gentle' : ' · full'}${s.indoor === undefined ? '' : s.indoor ? ' · indoor' : ' · outdoor'}${s.manual ? ' · GLOVE' : ''}${s.dry_run ? ' · DRY RUN' : ''}`
               : 'check Settings'}
           </Text>
+          {live && s && (s.flying || s.dry_run) ? (
+            <Text style={styles.movement} numberOfLines={1}>
+              {describeMovement(s.cmd)}
+            </Text>
+          ) : null}
         </View>
 
         {/* radius + map */}
@@ -93,6 +150,23 @@ export default function ControlScreen() {
           </Pressable>
         </View>
 
+        {/* altitude hold */}
+        <View style={styles.heightRow}>
+          <View>
+            <Text style={styles.heightLabel}>HEIGHT</Text>
+            <Text style={styles.heightValue}>
+              {s?.height != null ? `${s.height} cm` : '-'}
+              <Text style={styles.heightTarget}>
+                {s?.target_height != null ? `  →  holding ${s.target_height} cm` : ''}
+              </Text>
+            </Text>
+          </View>
+          <View style={styles.heightButtons}>
+            <RoundButton label="▼" size={46} onPress={() => send({ action: 'height_step', value: -HEIGHT_STEP })} disabled={!live || s?.target_height === undefined} />
+            <RoundButton label="▲" size={46} onPress={() => send({ action: 'height_step', value: HEIGHT_STEP })} disabled={!live || s?.target_height === undefined} />
+          </View>
+        </View>
+
         {/* the big map */}
         <Modal visible={mapOpen} transparent animationType="fade" onRequestClose={() => setMapOpen(false)}>
           <Pressable style={styles.mapBackdrop} onPress={() => setMapOpen(false)}>
@@ -103,6 +177,7 @@ export default function ControlScreen() {
               <Legend color={Palette.mute} label="leash" ring />
               <Legend color={Palette.blue} label="target" ring />
               <Legend color={Palette.orange} label="brace leg" />
+              <Legend color={Palette.ok} label="drone moving" />
             </View>
             <Text style={styles.mapReadout}>
               {s
@@ -175,6 +250,13 @@ export default function ControlScreen() {
             onPress={() => send({ action: 'gentle', on: !(s?.gentle ?? false) })}
             disabled={!live}
           />
+          <Toggle
+            label={s?.indoor === false ? 'OUTDOOR' : 'INDOOR'}
+            hint={s?.indoor === false ? 'quick to search, predicts your path' : 'patient turning, small search'}
+            on={s?.indoor ?? true}
+            onPress={() => send({ action: 'indoor', on: !(s?.indoor ?? true) })}
+            disabled={!live || s?.indoor === undefined}
+          />
         </View>
         <Pill
           label={`FLIP ORBIT DIRECTION  (${(s?.orbit_dir ?? 1) > 0 ? 'right' : 'left'})`}
@@ -189,7 +271,12 @@ export default function ControlScreen() {
           <Chip label={`brace ${s?.brace.ok ? 'OK' : 'lost'}${s?.brace.acc != null ? ` · acc ${s.brace.acc}` : ''}`} good={s ? s.brace.ok : null} />
           <Chip label={`glove ${s?.glove.ok ? (s.glove.clutch ? 'CLUTCH' : 'OK') : '-'}`} good={s ? s.glove.ok : null} />
           <Chip
-            label={s?.gps ? `GPS fix ${s.gps.fix} · ${s.gps.sats} sats` : 'GPS -'}
+            label={
+              s?.gps
+                ? `GPS fix ${s.gps.fix} · ${s.gps.sats} sats` +
+                  (s.gps.walking ? ` · ${s.gps.walking.toFixed(1)} m/s${s.gps.used ? ' · STEERING' : ''}` : '')
+                : 'GPS -'
+            }
             good={s?.gps ? s.gps.fix >= 2 : null}
           />
           <Chip
@@ -224,7 +311,52 @@ export default function ControlScreen() {
           ))}
         </View>
 
-        <Pill label="CALIBRATE" onPress={() => router.push('/settings')} />
+        {/* calibration: the laptop keys a / k / c / y, one tap each */}
+        <View style={styles.calCard}>
+          <View style={styles.calHeader}>
+            <Text style={styles.calTitle}>CALIBRATE</Text>
+            <Pressable onPress={() => router.push('/settings')} hitSlop={10}>
+              <Text style={styles.calHelp}>how ›</Text>
+            </Pressable>
+          </View>
+          <View style={styles.calRow}>
+            <CalTile
+              letter="K"
+              label="distance"
+              status={s?.calib.k_set ? 'set' : 'stand 2 m'}
+              done={s ? s.calib.k_set : null}
+              onPress={() => send({ action: 'cal_dist' })}
+              disabled={!live}
+            />
+            <CalTile
+              letter="C"
+              label="headings"
+              status={s?.calib.c_set ? 'set' : 'face drone'}
+              done={s ? s.calib.c_set : null}
+              onPress={() => send({ action: 'cal_align' })}
+              disabled={!live}
+            />
+            <CalTile
+              letter="A"
+              label="angle"
+              status={s ? `${s.calib.hfov.toFixed(0)}°` : '-'}
+              done={null}
+              onPress={() => send({ action: 'cal_angle' })}
+              disabled={!live}
+            />
+            <CalTile
+              letter="Y"
+              label="yaw test"
+              status="turns right"
+              done={null}
+              onPress={() => send({ action: 'yawtest' })}
+              disabled={!live}
+            />
+          </View>
+          {calNote ? <Text style={styles.calNote}>{calNote}</Text> : null}
+        </View>
+
+        <Pill label="SIMULATOR" tone="ghost" onPress={() => router.push('/sim')} />
 
         {/* emergency: hold, so a stray tap can't drop the drone */}
         <Pill
@@ -253,9 +385,23 @@ const styles = StyleSheet.create({
   stateBox: { backgroundColor: Palette.ink, borderRadius: Radius.card, paddingVertical: 10, paddingHorizontal: 14 },
   stateMain: { color: Palette.cream, fontSize: 18, fontWeight: '600', letterSpacing: 0.5 },
   stateSub: { color: Palette.mute, fontSize: 12, marginTop: 2 },
+  movement: { color: Palette.ok, fontSize: 15, fontWeight: '600', marginTop: 6, letterSpacing: 0.3 },
   row: { flexDirection: 'row', alignItems: 'center' },
   radiusCol: { alignItems: 'center', gap: 10, width: 76 },
   radiusText: { color: Palette.ink, fontSize: 15, fontWeight: '600' },
+  heightRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: Palette.ink,
+    borderRadius: Radius.card,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+  },
+  heightLabel: { color: Palette.mute, fontSize: 11, letterSpacing: 2 },
+  heightValue: { color: Palette.cream, fontSize: 18, fontWeight: '600', fontVariant: ['tabular-nums'], marginTop: 2 },
+  heightTarget: { color: Palette.mute, fontSize: 13, fontWeight: '400' },
+  heightButtons: { flexDirection: 'row', gap: 10 },
   mapHint: { position: 'absolute', right: 12, top: 8, color: Palette.mute, fontSize: 10, letterSpacing: 1 },
   mapBackdrop: { flex: 1, backgroundColor: 'rgba(20,14,10,0.94)', alignItems: 'center', justifyContent: 'center', gap: 16 },
   mapTitle: { color: Palette.cream, fontSize: 13, letterSpacing: 3 },
@@ -290,6 +436,27 @@ const styles = StyleSheet.create({
   chipDot: { width: 8, height: 8, borderRadius: 4 },
   chipText: { color: Palette.cream, fontSize: 12 },
   telemetry: { color: Palette.inkSoft, fontSize: 12, fontVariant: ['tabular-nums'], lineHeight: 18 },
+  calCard: { backgroundColor: Palette.ink, borderRadius: Radius.panel, padding: 14, gap: 10 },
+  calHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  calTitle: { color: Palette.mute, fontSize: 11, letterSpacing: 2 },
+  calHelp: { color: Palette.sand, fontSize: 12 },
+  calRow: { flexDirection: 'row', gap: 8 },
+  calTile: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderRadius: Radius.card,
+    borderWidth: 1.5,
+    borderColor: Palette.inkSoft,
+    backgroundColor: Palette.inkSoft,
+  },
+  calTileDone: { backgroundColor: Palette.sand, borderColor: Palette.sand },
+  calLetter: { color: Palette.cream, fontSize: 22, fontWeight: '300' },
+  calLabel: { color: Palette.cream, fontSize: 11, marginTop: 2 },
+  calStatus: { color: Palette.mute, fontSize: 10, marginTop: 2 },
+  calInkText: { color: Palette.ink },
+  calInkSoft: { color: Palette.inkSoft },
+  calNote: { color: Palette.cream, fontSize: 12, opacity: 0.85 },
   feed: { backgroundColor: Palette.ink, borderRadius: Radius.card, padding: 12, gap: 4 },
   feedTitle: { color: Palette.mute, fontSize: 11, letterSpacing: 2, marginBottom: 4 },
   feedLine: { color: Palette.cream, fontSize: 13 },

@@ -19,6 +19,7 @@ export default function RootLayout() {
           <Stack.Screen name="index" />
           <Stack.Screen name="connect" options={{ contentStyle: { backgroundColor: Palette.clay } }} />
           <Stack.Screen name="control" options={{ contentStyle: { backgroundColor: Palette.peach } }} />
+          <Stack.Screen name="sim" options={{ contentStyle: { backgroundColor: Palette.peach } }} />
           <Stack.Screen
             name="settings"
             options={{ presentation: 'modal', contentStyle: { backgroundColor: Palette.clay } }}

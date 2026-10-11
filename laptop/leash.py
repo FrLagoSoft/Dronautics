@@ -43,6 +43,40 @@ def distance_from_box(size_h, size_w, clipped, k_h, k_w):
     return k_w / max(size_w, 1e-3) if clipped else k_h / max(size_h, 1e-3)
 
 
+def k_from_samples(samples, dist_m=C.CAL_DIST_M):
+    """Distance calibration (key k) from ~1 s of frames instead of one.
+    samples: [(size_h, size_w, clipped, offset)] of the locked person.
+    Returns (k_h, k_w, None) on success, or (None, None, reason) saying what to fix."""
+    if len(samples) < C.CAL_K_FRAMES:
+        return None, None, f"only saw you in {len(samples)} of the frames: stay in view and try again"
+    hs = sorted(s[0] for s in samples)
+    ws = sorted(s[1] for s in samples)
+    offs = sorted(s[3] for s in samples)
+    mid = len(samples) // 2
+    h, w, off = hs[mid], ws[mid], offs[mid]
+    trim = 1 if len(hs) >= 8 else 0  # ignore one odd frame at each end (a box glitch, an arm)
+    if abs(off) > 0.6:
+        return None, None, "step toward the middle of the picture"
+
+    if sum(1 for s in samples if s[2]) > len(samples) * 0.2:
+        # Head or feet cut off (normal for the Tello's small camera at 2 m): calibrate from WIDTH, the same
+        # ruler distance_from_box uses when the box is cut off. Height gets the same correction factor.
+        spread = (ws[-1 - trim] - ws[trim]) / max(w, 1e-3)
+        if spread > C.CAL_K_MAX_SPREAD_W:
+            return None, None, f"you moved during the measurement ({spread:.0%} change): hold still, arms down"
+        if not 0.06 < w < 0.6:
+            return None, None, f"your box is {w:.0%} of the picture width: are you really {dist_m:.0f} m away?"
+        k_w = dist_m * w
+        return C.K_DEFAULT * k_w / C.KW_DEFAULT, k_w, None
+
+    spread = (hs[-1 - trim] - hs[trim]) / max(h, 1e-3)
+    if spread > C.CAL_K_MAX_SPREAD:
+        return None, None, f"you moved during the measurement ({spread:.0%} change): hold still"
+    if not 0.25 < h < 0.97:
+        return None, None, f"your box fills {h:.0%} of the picture height: are you really {dist_m:.0f} m away?"
+    return dist_m * h, dist_m * w, None
+
+
 def hfov_estimate(delta_deg, offset):
     """Camera-angle calibration: after the drone turns delta_deg, you appear at offset.
     Returns (estimate in degrees or None, sign_ok). Turning right must push you LEFT."""
@@ -114,6 +148,49 @@ def orbit_commands(d, r, b_now, direction):
 
 
 # ---------- losing and finding you ----------
+# ---------- GPS walking speed (outdoors) ----------
+# The drone has no GPS and doesn't know where north is, so GPS POSITION can't steer it. GPS SPEED is
+# accurate and needs no north, so: your walking velocity = GPS speed along your brace facing (aligned
+# to the drone by key c). Assumes you walk the way you face.
+def gps_speed(brace):
+    """Your walking speed in m/s when the brace GPS is trustworthy and you're actually walking, else 0."""
+    if not brace or brace.get("fix", 0) < C.GPS_FIX_MIN:
+        return 0.0
+    speed, sacc = brace.get("speed"), brace.get("sacc")
+    if speed is None or sacc is None or sacc > C.GPS_SACC_MAX or speed < C.GPS_WALK_MIN:
+        return 0.0
+    return float(speed)
+
+
+def walk_feedforward(speed, phi):
+    """Extra (lr, fb) so the drone starts moving WITH you instead of waiting for the camera to see you drift.
+    phi = your facing in the drone's frame (0 = the way the drone points, + = right)."""
+    a = math.radians(phi)
+    fb = clamp(C.GPS_FF_RC_PER_MPS * speed * math.cos(a), -C.GPS_FF_MAX, C.GPS_FF_MAX)
+    lr = clamp(C.GPS_FF_RC_PER_MPS * speed * math.sin(a), -C.GPS_FF_MAX, C.GPS_FF_MAX)
+    return int(round(lr)), int(round(fb))
+
+
+def predict_position(d, seen_bearing, facing_world, speed, age):
+    """Camera lost you `age` s ago at (d, seen_bearing); you've been walking `speed` m/s along facing_world.
+    Returns (bearing, distance) of where you probably are now, in the same world angles as seen_bearing."""
+    walked = speed * min(age, C.GPS_DR_MAX_S)
+    sb, fw = math.radians(seen_bearing), math.radians(facing_world)
+    x = d * math.cos(sb) + walked * math.cos(fw)
+    y = d * math.sin(sb) + walked * math.sin(fw)
+    return math.degrees(math.atan2(y, x)), math.hypot(x, y)
+
+
+def height_command(height_cm, target_cm):
+    """Altitude hold -> ud speed. 0 when the height is unknown or close enough."""
+    if height_cm is None:
+        return 0
+    err = target_cm - height_cm
+    if abs(err) < C.HEIGHT_DEADBAND_CM:
+        return 0
+    return int(round(clamp(C.HEIGHT_GAIN * err, -C.HEIGHT_MAX_UD, C.HEIGHT_MAX_UD)))
+
+
 def lost_behavior(age, seen_bearing, psi_d, world_rate, exit_dir):
     """While you're out of view: (state, yaw). HOLD looks ahead along your path,
     SEARCH turns toward the side you left, LOST hovers."""

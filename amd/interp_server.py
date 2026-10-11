@@ -92,9 +92,11 @@ print(f"Interpolation: {engine.name} on {engine.device} [{engine.backend}], {arg
 # ---------------------------------------------------------------- pipeline
 incoming = {"frame": None}
 incoming_lock = threading.Condition()
-out_frames = collections.deque(maxlen=8)          # (jpeg bytes, synthetic?)
+out_frames = collections.deque(maxlen=16)         # (jpeg bytes, synthetic?)
 out_lock = threading.Lock()
-stats = {"frames_in": 0, "frames_out": 0, "interp_ms": 0.0, "in_interval": 1 / 15, "last_in": 0.0}
+stats = {"frames_in": 0, "frames_out": 0, "interp_ms": 0.0, "in_interval": 1 / 15, "last_in": 0.0,
+         "late_dropped": 0, "last_seq": 0}
+seq_lock = threading.Lock()
 
 
 def label(img, synthetic):
@@ -171,6 +173,15 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(400)
             self.end_headers()
             return
+        seq = int(self.headers.get("X-Seq", "0") or 0)
+        if seq:
+            with seq_lock:
+                if seq <= stats["last_seq"]:
+                    stats["late_dropped"] += 1   # an older frame overtaken by a newer one: skip it
+                    self.send_response(204)
+                    self.end_headers()
+                    return
+                stats["last_seq"] = seq
         now = time.time()
         if stats["last_in"]:
             stats["in_interval"] = 0.8 * stats["in_interval"] + 0.2 * min(1.0, now - stats["last_in"])
@@ -192,6 +203,7 @@ class Handler(BaseHTTPRequestHandler):
                 "fps_in": round(1 / max(stats["in_interval"], 1e-3), 1),
                 "fps_out": round(args.multi / max(stats["in_interval"], 1e-3), 1),
                 "frames_in": stats["frames_in"], "frames_out": stats["frames_out"],
+                "late_dropped": stats["late_dropped"],
                 "receiving": time.time() - stats["last_in"] < 2.0,
             }).encode()
             self.send_response(200)
@@ -205,11 +217,19 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             try:
+                buffering = True
                 while True:
                     with out_lock:
-                        while len(out_frames) > args.multi + 1:   # running behind: skip ahead, keep latency low
-                            out_frames.popleft()
-                        item = out_frames.popleft() if out_frames else None
+                        n = len(out_frames)
+                        if buffering and n < args.multi + 1:      # build a small cushion against network jitter
+                            item = None
+                        else:
+                            buffering = False
+                            while len(out_frames) > 3 * (args.multi + 1):  # far behind: skip ahead
+                                out_frames.popleft()
+                            item = out_frames.popleft() if out_frames else None
+                            if item is None:
+                                buffering = True                   # ran dry: rebuild the cushion
                     if item is None:
                         time.sleep(0.005)
                         continue
