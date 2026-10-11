@@ -20,7 +20,8 @@ import urllib.request
 import cv2
 
 import config as C
-
+#This was a pain to set up. It works though, you can see the width of the stream is set up to work alongside the AMD Instance. 
+#it continously sets up a connection to the instance and then sends over frames to it. the video is a bit choppy but it works at double the framerate.
 
 class InterpUplink:
     def __init__(self, url=C.INTERP_URL, fps=C.INTERP_FPS, token=None, width=None, workers=None):

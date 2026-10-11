@@ -1,22 +1,22 @@
-"""config.py - every setting in one place, grouped by system.
+"""config.py - THIS IS THE HUB WHERE EVERYTHING EXISTS. LIKE SERIOUSLY. EVERY SETTING IS HERE. 
 Values here are starting points; calibration keys (a, k, c) adjust some of them live."""
 import os
 
 # ---------- run ----------
-DRY_RUN = False          # True = webcam stands in for the drone, nothing flies
-LOOP_HZ = 20              # control loop rate (commands per second)
+DRY_RUN = False          # True = webcam stands in for the drone, nothing flies (This is just a test tool, nothing serious)
+LOOP_HZ = 20              # control loop rate (commands per second). Remember how it's said it takes 20 commands / second? it's true! 
 
 # ---------- base station link ----------
-SERIAL_PORT = "COM9"      # the base station XIAO's port (check in the Arduino IDE)
+SERIAL_PORT = "COM9"      # the base station XIAO's port (check in the Arduino IDE) THIS IS SPECIFIC TO YOUR COMPUTER. MINE WAS COM9, CAUSE I WANTED TO.
 BAUD = 115200
-LINK_TIMEOUT = 1.0        # seconds without packets = link lost
+LINK_TIMEOUT = 1.0        # seconds without packets = link lost. You can turn this up if you want to, but I don't think it's a good idea.
 LOG_PATH = "brace_log.csv"
 
 # ---------- signs (calibration checks 1 and 2: both headings must grow clockwise) ----------
-DRONE_YAW_SIGN = 1
+DRONE_YAW_SIGN = 1 #This basically just spins the drone in the opposite direction of the brace, just to calibrate the drone
 BRACE_SIGN = 1
 
-# ---------- vision ----------
+# ---------- vision ---------- All of these variables will be commented on for their usage, here you go: 
 MODEL_PATH = "yolo11n.pt"
 CONF = 0.4                # detection confidence; lower finds you more often in dim light
 IMGSZ = 416               # smaller = faster detection
@@ -114,13 +114,14 @@ INTERP_PUBLIC_URL = ""                                   # stream URL for the ph
 # ---------- indoor / outdoor turning (switch live: key n, or the INDOOR toggle in the app) ----------
 # Indoors you barely move and short detection misses are common, so the drone waits longer before
 # guessing, guesses less, and searches a smaller arc. Outdoors keeps the original, more predictive values.
+# I did this feature partly due to how many people are indoors when places are crowded. So. 
 INDOOR = True             # profile at startup
 PROFILES = {
     "indoor": dict(FRESH_S=1.0, LOOK_LEAD_MAX=15, YAW_FF=0.1, SEARCH_SWEEP=45, SEARCH_YAW=20, WORLD_RATE_MAX=45),
     "outdoor": dict(FRESH_S=0.5, LOOK_LEAD_MAX=60, YAW_FF=0.2, SEARCH_SWEEP=120, SEARCH_YAW=30, WORLD_RATE_MAX=120),
 }
 
-
+#Local profile override for multiple profile usage, if you switch IP ports often
 def apply_profile(indoor):
     """Overwrite the turning settings above with one profile. Everything reads them live, so this
     takes effect on the next control loop."""

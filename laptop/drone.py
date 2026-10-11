@@ -9,7 +9,7 @@ import cv2
 
 import config as C
 
-
+#These functions are just the TelloDrone / DryRunDrone classes. they're local to Tello itself, though it wouldn't be hard to repurpose them for other drones though.
 class DryRunDrone:
     """Webcam instead of the drone. Nothing flies; yaw stays 0."""
     is_dry_run = True
@@ -66,6 +66,7 @@ class TelloDrone:
     def frame(self):
         img = self.reader.frame
         # djitellopy delivers RGB; OpenCV expects BGR. If colors look wrong, remove the conversion.
+        #The RGB is used for the whole picture. this is how it actually gets a frame of the whole picture in there. 
         return None if img is None else cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
 
     def yaw(self):

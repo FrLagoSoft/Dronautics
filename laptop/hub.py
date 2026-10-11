@@ -46,7 +46,7 @@ def print_phone_addresses():
     if others:
         print(f"            other addresses: {', '.join(others)}")
     print("-" * 60)
-
+# This is the logic behind a hotspot being used. If there's a hotspot through an open port, the phone will connect automatically. this is why I put the phone in the USB
 
 class Hub:
     def __init__(self):

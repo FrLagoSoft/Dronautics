@@ -2,7 +2,8 @@
 import math
 
 import cv2
-
+#Yolo logic for the drone.
+#It's split into different body parts. Mostly because of the drone's camera being... really small.  
 GREEN, WHITE, GRAY, ORANGE, BLUE = (0, 255, 0), (255, 255, 255), (140, 140, 140), (0, 165, 255), (255, 140, 40)
 
 
